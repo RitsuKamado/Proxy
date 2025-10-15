@@ -1,7 +1,6 @@
 import express from "express";
 import cors from "cors";
 import axios from "axios";
-import fetch from "node-fetch";
 import { Readable } from "stream";
 
 const app = express();
