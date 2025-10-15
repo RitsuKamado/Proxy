@@ -1,15 +1,16 @@
-const express = require('express');
-const cors = require('cors');
-const axios = require('axios');
-
+import express from "express";
+import cors from "cors";
+import axios from "axios";
+import fetch from "node-fetch";
+import { Readable } from "stream";
 
 const app = express();
 app.use(cors());
 
+// Unified endpoint
 app.get("/", async (req, res) => {
   const target = req.query.url;
   const headersParam = req.query.headers;
-
   if (!target) return res.status(400).send("Missing ?url=");
 
   let customHeaders = {};
@@ -22,69 +23,56 @@ app.get("/", async (req, res) => {
   }
 
   try {
-    const proxied = await fetch(target, {
+    const range = req.headers.range;
+    const decodedUrl = decodeURIComponent(target);
+
+    // Prefer axios for video/streaming
+    const response = await axios.get(decodedUrl, {
+      responseType: "stream",
       headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
+        "Referer": "https://vidrock.net/",
+        ...(range ? { Range: range } : {}),
         ...customHeaders,
       },
     });
 
+    Object.entries(response.headers).forEach(([key, value]) =>
+      res.setHeader(key, value)
+    );
+
     res.set("Access-Control-Allow-Origin", "*");
     res.set("Access-Control-Allow-Methods", "GET,HEAD,OPTIONS");
-    res.set("Access-Control-Allow-Headers", "Content-Type");
+    res.set("Access-Control-Allow-Headers", "Content-Type,Range");
 
-    proxied.body.pipe(res);
-  } catch (e) {
-    res.status(500).send("Error fetching: " + e.message);
+    res.status(response.status);
+    req.on("close", () => response.data.destroy?.());
+    response.data.pipe(res);
+  } catch (err) {
+    console.warn("Axios failed, falling back to fetch:", err.message);
+    try {
+      const proxied = await fetch(target, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+          ...customHeaders,
+        },
+      });
+
+      // Convert Web Stream → Node Stream
+      const nodeStream = Readable.fromWeb(proxied.body);
+
+      res.set("Access-Control-Allow-Origin", "*");
+      res.set("Access-Control-Allow-Methods", "GET,HEAD,OPTIONS");
+      res.set("Access-Control-Allow-Headers", "Content-Type,Range");
+
+      nodeStream.pipe(res);
+    } catch (e) {
+      res.status(500).send("Error fetching: " + e.message);
+    }
   }
 });
 
-app.get("/proxy", async (req, res) => {
-    let targetUrl = req.query.url;
-    if (!targetUrl) return res.status(400).send("Missing URL");
-
-    try {
-        if (!targetUrl.includes("proxy.vidrock.store/")) {
-            targetUrl = decodeURIComponent(targetUrl);
-        }
-
-        // Forward Range header if present
-        const range = req.headers.range;
-
-        const response = await axios.get(targetUrl, {
-            responseType: "stream", // Stream for large video files
-            headers: {
-                "User-Agent":
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
-                "Referer": "https://vidrock.net/",
-                ...(range ? { Range: range } : {})
-            }
-        });
-
-        // Pass through important headers for video streaming
-        Object.keys(response.headers).forEach(header => {
-            res.setHeader(header, response.headers[header]);
-        });
-
-        res.status(response.status);
-                // When client closes connection, destroy the axios stream to avoid leaks
-        req.on('close', () => {
-            if (response.data.destroy) {
-                response.data.destroy();
-            }
-        });
-        response.data.pipe(res);
-
-    } catch (err) {
-        console.error("Proxy error:", err.message);
-        if (err.response) {
-            res.status(err.response.status).send("Error fetching video");
-        } else {
-            res.status(500).send("Internal server error");
-        }
-    }
-});
-
-app.listen(3001, () => {
-  console.log('✅ Server running at http://localhost:3001');
-});
+app.listen(3000, () =>
+  console.log("✅ Proxy running on http://localhost:3000")
+);
